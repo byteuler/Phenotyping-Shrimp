@@ -167,9 +167,8 @@ class extract_3dim():
         integral_norm = scipy.integrate.quad(f_norm, xt_norm[0], xt_norm[-1])
         integral = scipy.integrate.quad(f, xt[0], xt[-1])
         d3bodylength = (all_normalizer.inverse_transform(integral_norm)[0] - all_normalizer.mean_)[0]
-
-        contents = np.array(
-            [imgtime, d3bodylength.round(2)]).reshape(1, -1)
+        
+        contents = np.array([imgtime, d3bodylength.round(2)]).reshape(1, -1)
         data = pd.DataFrame(contents, columns=columns)
         data.to_csv("./3d_bodylength.csv", mode='a', header=False, index=False)
 
