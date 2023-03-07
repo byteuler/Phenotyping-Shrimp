@@ -1,0 +1,181 @@
+import pandas as pd
+import os
+from PIL import Image
+import numpy as np
+import scipy.integrate
+from sklearn import preprocessing
+from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+
+idxside = [128,8421376,32768,8388608,0]  # Side
+idxtop = [32896,8388736,128,8421376,32768,8388608,0]  # TOP
+factort = 0.016216216216216217
+factors = 0.01545595054095827
+
+def get_path():
+    pp = os.getcwd()
+    paths = os.path.join(pp, 'sample_side')
+    patht = os.path.join(pp, 'sample_top')
+
+    ifiles_top = os.listdir(patht)
+    ifiles_top.sort(key=lambda x: int(x[x.find('_') + 1:-4]))
+    ifiles_side = os.listdir(paths)
+    ifiles_side.sort(key=lambda x: int(x[x.find('_') + 1:-4]))
+    pathtop = list()
+    pathside =list()
+    for _,i in enumerate(ifiles_top):
+        if 'ShrimpSide'+i[i.find('_'):] in ifiles_side:
+            pathtop.append(os.path.join(patht,i))
+            pathside.append(os.path.join(paths,'ShrimpSide'+i[i.find('_'):]))
+    return pathtop,pathside
+
+
+def hashencode(path,idx):
+
+    im = path
+    img = Image.open(im)
+    img = np.array(img, dtype='int64')
+
+    hash = np.zeros(img.shape[0] * img.shape[1], dtype=np.uint8).reshape(img.shape[0], img.shape[1])
+    hash = (img[:, :, 0] * 256 + img[:, :, 1]) * 256 + img[:, :, 2]
+    for i, id in enumerate(idx):
+        hash = np.where(hash == id, i + 1, hash)
+
+    hash -= 1        # side:  0:tail 1:eye 2:carpace 3:body  4:un       top:  0:tail 1:line 2:fa 3:eye 4:carpace 5:body 6:un
+
+    return hash
+
+class extract_3dim():
+
+    pathtop,pathside = get_path()
+    cnt=0
+    ans =0
+    truedata = pd.read_csv('./true_sample.csv', encoding='utf-8', index_col=0)
+    columns = ["Tname","AL3"]
+    filename = "./3d_bodylength.csv"
+    data = pd.DataFrame(columns=columns)
+    if not os.path.exists(filename):
+        data.to_csv(filename, encoding='utf_8', mode='a', index=False)
+    else:
+        data.to_csv(filename, encoding='utf_8', mode='a', index=False, header=False)
+
+    for name in range(len(pathtop)):
+        if (os.path.basename(pathside[name])[os.path.basename(pathside[name]).find('_')+1:os.path.basename(pathside[name]).find('.')]!= os.path.basename(pathtop[name])[os.path.basename(pathtop[name]).find('_')+1:os.path.basename(pathtop[name]).find('.')]):
+            break
+        imgtime = os.path.basename(pathside[name])[os.path.basename(pathside[name]).find('_')+1:os.path.basename(pathside[name]).find('.')]
+        hashtop = hashencode(pathtop[name], idxtop)
+        hashsid = hashencode(pathside[name], idxside)
+        # raise hashtop.shape != hashsid.shape
+
+        pix_h = [[] for _ in range(6)]
+
+        threshold_h_body = 0 # top view X,Y coordinate filter thresholds
+        threshold_high_body = 0 # side view height Z filter threshold
+
+        axistop = [[[] for _ in range(4)] for _ in range(hashtop.shape[1])] # top view coordinates
+
+        xt = list(); y = list()
+        xs = list(); z = list()
+
+        for col in range(hashtop.shape[1]):
+            for i in range(len(pix_h)):
+                pix_h[i].append(np.sum(hashtop[:, col] == i))
+
+            t = np.where(hashtop[:, col] == 5)[0]
+            if len(t) > threshold_h_body:
+                xt.append(col)
+                y.append(np.mean(t,dtype=np.int32)) # the advantage of using the average value is that it avoids the effect of splitting coarse outliers
+
+            s = np.where(hashsid[:,col] ==3)[0]
+            if len(s) > threshold_high_body:
+                xs.append(col)
+                z.append(hashsid.shape[0]-np.mean(s,dtype=np.int32)-1)
+
+        ln = len(xt) - len(z)
+        z = np.array(z,dtype=np.int64); y = np.array(y,dtype=np.int64);  xt = np.array(xt,dtype=np.int64); xs = np.array(xs,dtype=np.int64)
+        if ln>0:
+            l = int(ln * 0.5)
+            r = ln - l
+            if z[0]>z[-1]:
+                lval = np.array([i  for i in range(z[0]+1,z[0]+ln+1)])
+                lval = lval[::-1]
+                z = np.insert(z, 0, lval)
+            else:
+                rval = np.array([i if i > 0 else 1 for i in range(z[-1] + 1, z[-1] + ln + 1)])
+                z = np.hstack((z, rval))
+        elif ln<0:
+            ans+=1
+            z = z[:len(z) - abs(ln)]
+        z =  np.array(z, dtype=np.float32).reshape(-1, 1)*factors ; y = np.array(y, dtype=np.float32).reshape(-1, 1)*factort; xt = np.array(xt, dtype=np.float32).reshape(-1, 1)*factort; xs = np.array(xs, dtype=np.float32).reshape(-1, 1)*factors
+        all_normalizer = StandardScaler()
+        data = np.vstack((xt,y,z))
+        data_norm = all_normalizer.fit_transform(data)
+        xt_norm = data_norm[:xt.shape[0],:]; y_norm = data_norm[xt.shape[0]:y.shape[0]*2,:]; z_norm = data_norm[z.shape[0]*2:,:]
+        N = len(y)
+
+        # Standardised data
+        x1_norm = np.sum(xt_norm);
+        x2_norm = np.sum(xt_norm ** 2)
+        x3_norm = np.sum(xt_norm ** 3)
+        x4_norm = np.sum(xt_norm ** 4)
+        y1_norm = np.sum(y_norm)
+        yx_norm = np.sum(y_norm * xt_norm)
+
+        z1_norm = np.sum(z_norm)
+        zx_norm = np.sum(z_norm * xt_norm);
+        zx2_norm = np.sum(z_norm * (xt_norm ** 2))
+
+        # Original data
+        x1 = np.sum(xt);
+        x2 = np.sum(xt**2);
+        x3 = np.sum(xt**3);
+        x4 = np.sum(xt**4)
+
+        y1 = np.sum(y);
+        yx = np.sum(y*xt)
+
+        z1 = np.sum(z);
+        zx = np.sum(z*xt);
+        zx2 = np.sum(z*(xt**2))
+
+        """top view for fitting w = A0 + A1*x"""
+        # w = a0 + a1*x system of equations after standardisation
+        X_norm = np.array([[N, x1_norm], [x1_norm, x2_norm]])
+        Y_norm = np.array([y1_norm, yx_norm])
+        A_norm = np.linalg.inv(X_norm.T.dot(X_norm)).dot(X_norm.T).dot(Y_norm)
+
+        # w = a0 + a1*x  the original set of equations
+        X =np.array([ [N,x1],[x1,x2] ])
+        Y=np.array([y1,yx])
+        A = np.linalg.inv(X.T.dot(X)).dot(X.T).dot(Y)
+
+        """side view for fitting u = b0 + b1*x + b2*x^2 """
+        # u = b0 + b1*x +b2*x^2  system of equations after standardisation
+        X_norm = np.array([[N, x1_norm, x2_norm], [x1_norm, x2_norm, x3_norm], [x2_norm, x3_norm, x4_norm]])
+        Z_norm = np.array([z1_norm, zx_norm, zx2_norm]).reshape((3, 1))
+        B_norm = np.linalg.inv(X_norm.T.dot(X_norm)).dot(X_norm.T).dot(Z_norm)
+
+        # u = b0 + b1*x +b2*x^2 system of equations before standardisation
+        X = np.array([[N,  x1, x2],[x1, x2, x3],[x2, x3, x4]])
+        Z = np.array([z1,zx,zx2]).reshape((3,1))
+        B = np.linalg.inv(X.T.dot(X)).dot(X.T).dot(Z)
+
+        """ differentiation and integration """
+        f_norm = lambda x, a1=A_norm[1], b1=B_norm[1][0], b2=B_norm[2][0]: np.sqrt(1 + a1 ** 2 + (b1 + 2 * b2 * x) ** 2)
+        f = lambda x, a1=A[1], b1=B[1][0], b2=B[2][0]: np.sqrt(1 + a1 ** 2 + (b1 + 2 * b2 * x) ** 2)
+        integral_norm = scipy.integrate.quad(f_norm, xt_norm[0], xt_norm[-1])
+        integral = scipy.integrate.quad(f, xt[0], xt[-1])
+        d3bodylength = (all_normalizer.inverse_transform(integral_norm)[0] - all_normalizer.mean_)[0]
+
+        contents = np.array(
+            [imgtime, d3bodylength.round(2)]).reshape(1, -1)
+        data = pd.DataFrame(contents, columns=columns)
+        data.to_csv("./3d_bodylength.csv", mode='a', header=False, index=False)
+
+
+if __name__ == "__main__":
+    extract_3dim()
+
+
+
